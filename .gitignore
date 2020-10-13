@@ -2,3 +2,4 @@ sandbox
 TODO
 .vscode
 *.drawio
+.DS_Store
