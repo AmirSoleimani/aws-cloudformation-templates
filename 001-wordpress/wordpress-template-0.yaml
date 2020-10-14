@@ -1,0 +1,500 @@
+# /*
+# ** Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# **
+# ** Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# ** software and associated documentation files (the "Software"), to deal in the Software
+# ** without restriction, including without limitation the rights to use, copy, modify,
+# ** merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# ** permit persons to whom the Software is furnished to do so.
+# **
+# ** THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# ** INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# ** PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# ** HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# ** OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# ** SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# */
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Wordpress
+
+Parameters:
+  DatabaseName:
+    AllowedPattern: ^([a-zA-Z0-9]*)$
+    Description: The Amazon RDS database name.
+    ConstraintDescription: Must contain only alphanumeric characters (minimum 8; maximum 16).
+    MaxLength: 25
+    MinLength: 3
+    Type: String
+  DatabaseMasterUsername:
+    AllowedPattern: ^([a-zA-Z0-9]*)$
+    Description: The Amazon RDS master username.
+    ConstraintDescription: Must contain only alphanumeric characters (minimum 8; maximum 16).
+    MaxLength: 16
+    MinLength: 3
+    Type: String
+  DatabaseMasterPassword:
+    AllowedPattern: ^([a-zA-Z0-9`~!#$%^&*()_+,\\-])*$
+    ConstraintDescription: Must be letters (upper or lower), numbers, spaces, and these special characters `~!#$%^&*()_+,-
+    Description: The Amazon RDS master password. Letters, numbers, spaces, and these special characters `~!#$%^&*()_+,-
+    MaxLength: 41
+    MinLength: 8
+    NoEcho: true
+    Type: String
+
+  VPC:
+    AllowedPattern: ^(vpc-)([a-z0-9]{8}|[a-z0-9]{17})$
+    Description: The VPC Id of an existing VPC to launch this stack in.
+    Type: AWS::EC2::VPC::Id
+  AppSubnets:
+    Description: A list of subnets to use when launching EC2 app instances
+    Type: List<AWS::EC2::Subnet::Id>
+  EFSSubnets:
+    Description: A list of subnets to use for EFS mount points. These should be in the same AZs as your app subnets
+    Type: List<AWS::EC2::Subnet::Id>
+  DatabaseSubnets:
+    Description: A list of subnets to use when launching Aurora MySQL instances
+    Type: List<AWS::EC2::Subnet::Id>
+  ALBSubnets:
+    Description: A list of subnets to use for application load balancer
+    Type: List<AWS::EC2::Subnet::Id>
+
+  DomainName:
+    Description: If leave it empty, then we will use ALB DNSName. https://example.com
+    Type: String
+  WPAdminEmail:
+    AllowedPattern: ^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$
+    Description: The admin email address for WordPress.
+    Type: String
+  WPAdminUsername:
+    AllowedPattern: ^([a-zA-Z0-9])([a-zA-Z0-9_-])*([a-zA-Z0-9])$
+    Description: The WordPress admin username.
+    Type: String
+  WPAdminPassword:
+    AllowedPattern: ^([a-zA-Z0-9`~!#$%^&*()_+,\\-])*$
+    ConstraintDescription: Must be letters (upper or lower), numbers, spaces, and these special characters `~!#$%^&*()_+,-
+    Description: The WordPress admin password. Letters, numbers, spaces, and these special characters `~!#$%^&*()_+,-
+    Type: String
+    NoEcho: true
+  WPVersion:
+    AllowedValues:
+      - latest
+      - nightly
+      - 5.4
+      - 5.2
+      - 4.9
+      - 4.8
+      - 4.7
+    Default: latest
+    Type: String
+
+  EC2KeyName:
+    AllowedPattern: ^([a-zA-Z0-9 @.`~!#$%^&*()_+,\\-])*$
+    ConstraintDescription: Must be letters (upper or lower), numbers, and special characters.
+    Description: Name of an EC2 KeyPair. Your Web instances will launch with this KeyPair.
+    Type: AWS::EC2::KeyPair::KeyName
+  SSHSourceLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VPC
+          - AppSubnets
+          - EFSSubnets
+          - DatabaseSubnets
+          - ALBSubnets
+      - Label:
+          default: "Database Configuration"
+        Parameters:
+          - DatabaseName
+          - DatabaseMasterUsername
+          - DatabaseMasterPassword
+      - Label:
+          default: "Wordpress Configuration"
+        Parameters:
+          - DomainName
+          - WPAdminEmail
+          - WPAdminUsername
+          - WPAdminPassword
+          - WPVersion
+      - Label:
+          default: "Security"
+        Parameters:
+          - EC2KeyName
+          - SSHSourceLocation
+
+
+Conditions:
+  UseALBDNSName: !Equals [ !Ref DomainName, "" ]
+
+
+Resources:
+  # EFS
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS mount targets
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+  EFSSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !GetAtt EFSSecurityGroup.GroupId
+      GroupId: !GetAtt EFSSecurityGroup.GroupId
+  ElasticFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+  ElasticFileSystemMountTarget0:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ElasticFileSystem
+      SecurityGroups:
+      - !Ref EFSSecurityGroup
+      SubnetId: !Select [ 0, !Ref EFSSubnets ]
+  ElasticFileSystemMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ElasticFileSystem
+      SecurityGroups:
+      - !Ref EFSSecurityGroup
+      SubnetId: !Select [ 1, !Ref EFSSubnets ]
+  ElasticFileSystemMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ElasticFileSystem
+      SecurityGroups:
+      - !Ref EFSSecurityGroup
+      SubnetId: !Select [ 2, !Ref EFSSubnets ]
+
+  # Database
+  DatabaseCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      BackupRetentionPeriod: 30
+      DatabaseName: !Ref DatabaseName
+      DBSubnetGroupName: !Ref DataSubnetGroup
+      Engine: aurora
+      MasterUsername: !Ref DatabaseMasterUsername
+      MasterUserPassword: !Ref DatabaseMasterPassword
+      Port: 3306
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+      - !Ref DatabaseSecurityGroup
+  DatabaseInstance0:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete # Retain?
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref DatabaseCluster
+      DBInstanceClass: db.t3.small
+      DBSubnetGroupName: !Ref DataSubnetGroup
+      Engine: aurora
+  DatabaseInstance1:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete # Retain?
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref DatabaseCluster
+      DBInstanceClass: db.t3.small
+      DBSubnetGroupName: !Ref DataSubnetGroup
+      Engine: aurora
+  DataSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: RDS Database Subnet Group for WordPress
+      SubnetIds: !Ref DatabaseSubnets
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Amazon RDS cluster
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+      VpcId:
+        !Ref VPC
+
+  # ALB
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for application load balancer
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId:
+        !Ref VPC
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets: !Ref ALBSubnets
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+  ApplicationLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !Sub /
+      HealthCheckTimeoutSeconds: 5
+      Matcher:
+        HttpCode: '200,301'
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VPC
+
+# CloudFront
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    DependsOn:
+    - ApplicationLoadBalancer
+    Properties:
+      DistributionConfig:
+        Comment: 'Cloudfront Distribution pointing ALB Origin'
+        Origins:
+          - DomainName: !GetAtt ApplicationLoadBalancer.DNSName
+            Id: !Ref 'ApplicationLoadBalancer'
+            OriginPath: '/wp-content'
+            CustomOriginConfig:
+              HTTPPort: '80'
+              OriginProtocolPolicy: http-only
+              OriginKeepaliveTimeout: 60
+              OriginReadTimeout: 30
+        Enabled: true
+        HttpVersion: 'http2'
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - DELETE
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          DefaultTTL: 7200 # 2 hours
+          MaxTTL: 86400 # 1day
+          MinTTL: 0
+          SmoothStreaming: 'false'
+          TargetOriginId: !Ref 'ApplicationLoadBalancer'
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: 'redirect-to-https'
+        IPV6Enabled: true
+  
+  # App
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for web instances
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHSourceLocation
+      VpcId:
+        !Ref VPC
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref AppInstanceRole
+  AppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: logs
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:DescribeLogStreams
+            Resource:
+            - arn:aws:logs:*:*:*
+  AppAutoScalingGroup:
+      Type: AWS::AutoScaling::AutoScalingGroup
+      Properties:
+        Cooldown: 600
+        HealthCheckGracePeriod: 1200
+        HealthCheckType: ELB
+        LaunchConfigurationName:
+          !Ref AppLaunchConfiguration
+        MaxSize: 4
+        MinSize: 1
+        TargetGroupARNs:
+          - !Ref ALBTargetGroup
+        VPCZoneIdentifier: !Ref AppSubnets
+      CreationPolicy:
+        ResourceSignal:
+          Count: 1
+          Timeout: PT20M
+  AppAutoScalingGroupCPUPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50
+  AppLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn:
+        - DatabaseInstance0
+        - DatabaseInstance1
+        - CloudFrontDistribution
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          deploy_appserver:
+            - install_appserver
+            - build_wordpress
+            - install_wordpress
+            - start_appserver
+        install_appserver:
+          packages:
+            yum:
+              httpd: []
+              php: []
+              php-mysqlnd: []
+              php-devel: []
+              php-pear: []
+        build_wordpress:
+          files: 
+            /tmp/install_wordpress.sh:
+              content: !Sub
+                - |
+                  #!/bin/bash -xe
+
+                  # make site directory
+                  if [ ! -d /var/www/html/ix ]; then
+                    mkdir -p /var/www/html/ix
+                    cd /var/www/html
+
+                    # install wp-cli
+                    if [ ! -f /bin/wp/wp-cli.phar ]; then
+                      curl -o /bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+                      chmod +x /bin/wp
+                    fi
+
+                    if ! $(wp core is-installed --allow-root); then
+                        wp core download --version='${WPVersion}' --locale='en_GB' --allow-root
+                        wp core config --dbname='${DatabaseName}' --dbuser='${DatabaseMasterUsername}' --dbpass='${DatabaseMasterPassword}' --dbhost='${dbAddr}' --dbprefix=wp_ --allow-root
+                        wp core install --url='${domainName}' --title='Blog' --admin_user='${WPAdminUsername}' --admin_password='${WPAdminPassword}' --admin_email='${WPAdminEmail}' --skip-email --allow-root
+                        sed -i "/$table_prefix = 'wp_';/ a \define('WP_HOME', 'http://' . \$_SERVER['HTTP_HOST']); " /var/www/html/wp-config.php
+                        sed -i "/$table_prefix = 'wp_';/ a \define('WP_SITEURL', 'http://' . \$_SERVER['HTTP_HOST']); " /var/www/html/wp-config.php
+                        sed -i "/$table_prefix = 'wp_';/ a \$_SERVER['HTTP'] = 'on';" /var/www/html/wp-config.php
+                        sed -i "/$table_prefix = 'wp_';/ a \define('WP_CONTENT_URL', 'https://${cdnDomainName}');" /var/www/html/wp-config.php
+                        # set permissions of wordpress site directories
+                        chown -R apache:apache /var/www/html
+                        chmod u+wrx /var/www/html/wp-content/*
+                    fi
+                    RESULT=$?
+                    if [ $RESULT -eq 0 ]; then
+                        touch /var/www/html/wordpress.initialized
+                    else
+                        touch /var/www/html/wordpress.failed
+                    fi
+                  fi
+                - {
+                  dbAddr: !GetAtt DatabaseCluster.Endpoint.Address,
+                  domainName: !If [UseALBDNSName, 'http://${ApplicationLoadBalancer.DNSName}' , !Ref DomainName],
+                  cdnDomainName: !GetAtt CloudFrontDistribution.DomainName
+                }
+              mode: "000500"
+              owner: root
+              group: root
+        install_wordpress:
+          commands:
+            install_wordpress:
+              command: ./install_wordpress.sh
+              cwd: /tmp
+              ignoreErrors: false
+        start_appserver:
+          services:
+            sysvinit:
+              httpd:
+                enabled: true
+                ensureRunning: true
+    Properties:
+      IamInstanceProfile: !Ref AppInstanceProfile
+      ImageId: ami-0bb3fad3c0286ebd5
+      InstanceType: t3.micro
+      KeyName: !Ref EC2KeyName
+      SecurityGroups:
+      - !Ref AppSecurityGroup
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash -xe
+            yum update -y
+            yum update -y aws-cfn-bootstrap
+            yum install -y mysql
+            amazon-linux-extras enable php7.2
+            yum clean metadata
+
+            mkdir -p /var/www/html
+            mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ${ElasticFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html > mount.txt
+            /opt/aws/bin/cfn-init --configsets deploy_appserver --verbose --stack ${AWS::StackName} --resource AppLaunchConfiguration --region ${AWS::Region}
+            /opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}
+
+
+Outputs:
+  ALBDNSName:
+    Value:
+      !Sub 'http://${ApplicationLoadBalancer.DNSName}'
