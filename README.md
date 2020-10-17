@@ -5,3 +5,4 @@ It's my R&D repository for **CloudFormation**. BTW, If you decide to use these t
 
 ## Templates
 * [[001] Wordpress](001-wordpress/README.md)
+* [[002] Tweet, daily quote](002-tweet-daily-quote/README.md)

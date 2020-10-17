@@ -1,0 +1,97 @@
+# /*
+# ** Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# **
+# ** Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# ** software and associated documentation files (the "Software"), to deal in the Software
+# ** without restriction, including without limitation the rights to use, copy, modify,
+# ** merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# ** permit persons to whom the Software is furnished to do so.
+# **
+# ** THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# ** INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# ** PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# ** HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# ** OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# ** SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# */
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: TweetDailyQuote
+
+Parameters:
+  S3BucketName:
+    Description: Source code S3 bucket name
+    Type: String
+  S3ObjectName:
+    Description: MUST be ZIP File. e.g mySourceCode.zip
+    Type: String
+
+  TwitterConsumerKey:
+    NoEcho: true
+    Description: Twitter Consumer Key
+    Type: String
+  TwitterConsumerSecret:
+    NoEcho: true
+    Description: Twitter Consumer Secret
+    Type: String
+  TwitterAuthToken:
+    NoEcho: true
+    Description: Twitter Auth Token
+    Type: String
+  TwitterAuthSecret:
+    NoEcho: true
+    Description: Twitter Auth Secret
+    Type: String
+
+Resources:
+  LambdaApp:
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Ref S3ObjectName
+      Environment: 
+        Variables:
+          consumerKey: !Ref TwitterConsumerKey
+          consumerSecret: !Ref TwitterConsumerSecret
+          authToken: !Ref TwitterAuthToken
+          authSecret: !Ref TwitterAuthSecret
+      Handler: app
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: go1.x
+      Timeout: 10
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaSchedule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: >
+        A schedule for the Lambda function.
+      ScheduleExpression: 'cron(0 7 * * ? *)' # Everyday at 02:00 AM
+      State: ENABLED
+      Targets:
+        - Arn: !Sub ${LambdaApp.Arn}
+          Id: LambdaSchedule
+
+  LambdaSchedulePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Sub ${LambdaApp.Arn}
+      Principal: 'events.amazonaws.com'
+      SourceArn: !Sub ${LambdaSchedule.Arn}
