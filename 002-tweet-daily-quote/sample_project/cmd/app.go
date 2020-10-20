@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -78,6 +79,10 @@ func getQuote() (*dailyQuote, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, errors.New("response is empty")
+	}
+	defer resp.Body.Close()
 
 	var result dailyQuote
 	json.NewDecoder(resp.Body).Decode(&result)
