@@ -22,15 +22,15 @@ Parameters:
   S3BucketName:
     Description: Source code S3 bucket name
     Type: String
-    Default: 'amirso-replace-me-gimme'
+    Default: ''
   S3ObjectName:
     Description: MUST be ZIP File. e.g mySourceCode.zip
     Type: String
-    Default: 'cloudstatus/cloudstatus.zip'
+    Default: ''
   Email:
     Description: 'Optional email address that will receive alerts.'
     Type: String
-    Default: 'amir.so@icloud.com'
+    Default: ''
 
 Conditions:
   HasEmail: !Not [!Equals [!Ref Email, '']]
